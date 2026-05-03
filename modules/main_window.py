@@ -3,9 +3,11 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit,
     QFileDialog, QMessageBox, QGroupBox, QSplitter,
-    QTabWidget, QCheckBox, QSpinBox
+    QTabWidget, QCheckBox, QSpinBox, QProgressDialog,
+    QDialog, QFormLayout, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont
 from .directory_scanner import DirectoryScanner
 from .git_history import GitHistoryExtractor
 from .ai_analyzer import AIAnalyzer
@@ -38,6 +40,73 @@ class ScanThread(QThread):
             self.scan_finished.emit(result)
         except Exception as e:
             self.scan_error.emit(str(e))
+
+class TestApiKeyThread(QThread):
+    test_finished = pyqtSignal(bool, str)
+    
+    def __init__(self, api_key, ai_analyzer):
+        super().__init__()
+        self.api_key = api_key
+        self.ai_analyzer = ai_analyzer
+    
+    def run(self):
+        try:
+            test_prompt = "Hello, this is a test message. Please respond with 'API_KEY_VALID' if you receive this message."
+            
+            system_prompt = "You are a helpful assistant. When the user sends a test message, respond exactly with 'API_KEY_VALID'."
+            
+            result = self.ai_analyzer._call_api(system_prompt, test_prompt, max_tokens=100)
+            
+            if "API_KEY_VALID" in result or result.strip():
+                self.test_finished.emit(True, "API Key 验证成功！您的 DeepSeek API Key 配置正确，可以正常使用。")
+            else:
+                self.test_finished.emit(False, "API Key 验证失败：返回结果不符合预期。")
+                
+        except Exception as e:
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg or "invalid" in error_msg.lower():
+                self.test_finished.emit(False, f"API Key 无效：{error_msg}\n\n请检查您的 API Key 是否正确，或访问 https://platform.deepseek.com/ 获取新的 API Key。")
+            elif "402" in error_msg or "Insufficient Balance" in error_msg:
+                self.test_finished.emit(False, f"API Key 余额不足：{error_msg}\n\n请访问 https://platform.deepseek.com/ 为您的账户充值。")
+            elif "429" in error_msg or "Too Many Requests" in error_msg:
+                self.test_finished.emit(False, f"请求过于频繁：{error_msg}\n\n请稍后再试，或检查您的 API 调用频率限制。")
+            else:
+                self.test_finished.emit(False, f"API Key 验证失败：{error_msg}\n\n请检查网络连接或稍后重试。")
+
+class GenerateProgressDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("正在生成 README")
+        self.setMinimumSize(400, 150)
+        self.setModal(True)
+        self._init_ui()
+    
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        title_label = QLabel("🔄 正在调用 DeepSeek API 生成专业 README...")
+        title_label.setFont(QFont("Arial", 12, QFont.Bold))
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        layout.addSpacing(20)
+        
+        self.progress_label = QLabel("准备中...")
+        self.progress_label.setAlignment(Qt.AlignCenter)
+        self.progress_label.setStyleSheet("color: #666; font-size: 14px;")
+        layout.addWidget(self.progress_label)
+        
+        layout.addSpacing(20)
+        
+        info_label = QLabel("💡 正在进行以下操作：\n• 分析核心代码片段\n• 生成项目概述\n• 总结 Git 历史\n• 整合生成 README\n\n请稍候，这可能需要几秒钟...")
+        info_label.setStyleSheet("color: #888; font-size: 11px;")
+        info_label.setAlignment(Qt.AlignLeft)
+        layout.addWidget(info_label)
+        
+        layout.addStretch()
+    
+    def update_progress(self, message):
+        self.progress_label.setText(f"📌 {message}")
 
 class GenerateThread(QThread):
     generate_finished = pyqtSignal(str)
@@ -137,6 +206,9 @@ class MainWindow(QMainWindow):
         self.api_key_edit.setEchoMode(QLineEdit.Password)
         self.api_key_edit.setPlaceholderText("输入您的 DeepSeek API Key")
         
+        self.test_api_btn = QPushButton("测试 API Key")
+        self.test_api_btn.setToolTip("点击测试 API Key 是否有效")
+        
         self.max_commits_label = QLabel("最近提交数:")
         self.max_commits_spin = QSpinBox()
         self.max_commits_spin.setRange(1, 100)
@@ -147,6 +219,7 @@ class MainWindow(QMainWindow):
         
         settings_layout.addWidget(self.api_key_label)
         settings_layout.addWidget(self.api_key_edit)
+        settings_layout.addWidget(self.test_api_btn)
         settings_layout.addWidget(self.max_commits_label)
         settings_layout.addWidget(self.max_commits_spin)
         settings_layout.addWidget(self.include_git_check)
@@ -227,6 +300,7 @@ class MainWindow(QMainWindow):
         self.scan_btn.clicked.connect(self._start_scan)
         self.generate_btn.clicked.connect(self._generate_readme)
         self.save_btn.clicked.connect(self._save_readme)
+        self.test_api_btn.clicked.connect(self._test_api_key)
     
     def _browse_directory(self):
         directory = QFileDialog.getExistingDirectory(self, "选择项目目录")
@@ -281,6 +355,37 @@ class MainWindow(QMainWindow):
         self.status_label.setText("扫描失败")
         QMessageBox.critical(self, "错误", f"扫描失败: {error_message}")
     
+    def _test_api_key(self):
+        api_key = self.api_key_edit.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "警告", "请先输入 DeepSeek API Key")
+            return
+        
+        self.test_api_btn.setEnabled(False)
+        self.status_label.setText("正在测试 API Key...")
+        
+        self.test_api_thread = TestApiKeyThread(api_key, self.ai_analyzer)
+        self.test_api_thread.test_finished.connect(self._on_test_api_finished)
+        self.test_api_thread.start()
+    
+    def _on_test_api_finished(self, success, message):
+        self.test_api_btn.setEnabled(True)
+        
+        if success:
+            self.status_label.setText("API Key 验证成功")
+            QMessageBox.information(
+                self,
+                "API Key 验证成功",
+                f"✅ {message}\n\n您的 DeepSeek API Key 配置正确，可以正常使用。"
+            )
+        else:
+            self.status_label.setText("API Key 验证失败")
+            QMessageBox.warning(
+                self,
+                "API Key 验证失败",
+                f"❌ {message}"
+            )
+    
     def _generate_readme(self):
         if not self.scan_result:
             QMessageBox.warning(self, "警告", "请先扫描项目目录")
@@ -298,6 +403,9 @@ class MainWindow(QMainWindow):
         self.save_btn.setEnabled(False)
         self.status_label.setText("正在生成 README...")
         
+        self.progress_dialog = GenerateProgressDialog(self)
+        self.progress_dialog.show()
+        
         self.generate_thread = GenerateThread(
             self.scan_result,
             self.git_history,
@@ -313,8 +421,14 @@ class MainWindow(QMainWindow):
     
     def _on_generate_progress(self, message):
         self.status_label.setText(message)
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.update_progress(message)
     
     def _on_generate_finished(self, readme_content):
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
         self.generated_readme = readme_content
         self.readme_preview_text.setText(readme_content)
         self.ai_analysis_text.setText("AI 分析已完成，请查看 README 预览")
@@ -324,13 +438,29 @@ class MainWindow(QMainWindow):
         self.save_btn.setEnabled(True)
         self.status_label.setText("README 生成完成")
         
-        QMessageBox.information(self, "完成", "README 生成完成！")
+        QMessageBox.information(
+            self, 
+            "完成", 
+            "✅ README 生成完成！\n\n文档已生成并预览，您可以点击「保存 README」按钮将其保存到项目目录。"
+        )
     
     def _on_generate_error(self, error_message):
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
         self.scan_btn.setEnabled(True)
         self.generate_btn.setEnabled(True)
         self.status_label.setText("生成失败")
-        QMessageBox.critical(self, "错误", f"生成失败: {error_message}")
+        
+        error_details = f"❌ 生成失败: {error_message}\n\n"
+        error_details += "💡 可能的解决方案：\n"
+        error_details += "1. 检查 API Key 是否正确\n"
+        error_details += "2. 检查网络连接\n"
+        error_details += "3. 检查 API Key 余额是否充足\n"
+        error_details += "4. 稍后重试（可能是服务器繁忙）"
+        
+        QMessageBox.critical(self, "错误", error_details)
     
     def _save_readme(self):
         if not self.generated_readme:
