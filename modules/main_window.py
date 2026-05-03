@@ -51,27 +51,12 @@ class TestApiKeyThread(QThread):
     
     def run(self):
         try:
-            test_prompt = "Hello, this is a test message. Please respond with 'API_KEY_VALID' if you receive this message."
-            
-            system_prompt = "You are a helpful assistant. When the user sends a test message, respond exactly with 'API_KEY_VALID'."
-            
-            result = self.ai_analyzer._call_api(system_prompt, test_prompt, max_tokens=100)
-            
-            if "API_KEY_VALID" in result or result.strip():
-                self.test_finished.emit(True, "API Key 验证成功！您的 DeepSeek API Key 配置正确，可以正常使用。")
-            else:
-                self.test_finished.emit(False, "API Key 验证失败：返回结果不符合预期。")
+            success, message = self.ai_analyzer.test_api_key(self.api_key)
+            self.test_finished.emit(success, message)
                 
         except Exception as e:
             error_msg = str(e)
-            if "401" in error_msg or "Unauthorized" in error_msg or "invalid" in error_msg.lower():
-                self.test_finished.emit(False, f"API Key 无效：{error_msg}\n\n请检查您的 API Key 是否正确，或访问 https://platform.deepseek.com/ 获取新的 API Key。")
-            elif "402" in error_msg or "Insufficient Balance" in error_msg:
-                self.test_finished.emit(False, f"API Key 余额不足：{error_msg}\n\n请访问 https://platform.deepseek.com/ 为您的账户充值。")
-            elif "429" in error_msg or "Too Many Requests" in error_msg:
-                self.test_finished.emit(False, f"请求过于频繁：{error_msg}\n\n请稍后再试，或检查您的 API 调用频率限制。")
-            else:
-                self.test_finished.emit(False, f"API Key 验证失败：{error_msg}\n\n请检查网络连接或稍后重试。")
+            self.test_finished.emit(False, f"API Key 验证过程中发生意外错误：\n\n{error_msg}\n\n💡 请检查您的网络连接或稍后重试。")
 
 class GenerateProgressDialog(QDialog):
     def __init__(self, parent=None):
@@ -372,14 +357,14 @@ class MainWindow(QMainWindow):
         self.test_api_btn.setEnabled(True)
         
         if success:
-            self.status_label.setText("API Key 验证成功")
+            self.status_label.setText("✅ API Key 验证成功")
             QMessageBox.information(
                 self,
                 "API Key 验证成功",
-                f"✅ {message}\n\n您的 DeepSeek API Key 配置正确，可以正常使用。"
+                f"✅ {message}"
             )
         else:
-            self.status_label.setText("API Key 验证失败")
+            self.status_label.setText("❌ API Key 验证失败")
             QMessageBox.warning(
                 self,
                 "API Key 验证失败",

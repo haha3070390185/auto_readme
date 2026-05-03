@@ -354,3 +354,141 @@ class AIAnalyzer:
             return "项目处于稳定阶段，主要在进行 Bug 修复和维护"
         else:
             return "项目处于维护阶段"
+    
+    def test_api_key(self, api_key, base_url="https://api.deepseek.com/v1", model="deepseek-v4-flash"):
+        """
+        测试 API Key 是否有效
+        
+        Args:
+            api_key: DeepSeek API Key
+            base_url: API 基础 URL
+            model: 用于测试的模型（默认使用较便宜的 flash 模型）
+        
+        Returns:
+            tuple: (success: bool, message: str)
+                - success: True 表示验证成功，False 表示失败
+                - message: 详细的结果或错误信息
+        """
+        if not api_key or not api_key.strip():
+            return False, "API Key 不能为空"
+        
+        api_key = api_key.strip()
+        
+        try:
+            messages = [
+                {"role": "user", "content": "Hello, please respond with 'OK' if you receive this message."}
+            ]
+            
+            if OPENAI_AVAILABLE:
+                try:
+                    client = OpenAI(
+                        api_key=api_key,
+                        base_url=base_url
+                    )
+                    
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        max_tokens=10,
+                        temperature=0.0
+                    )
+                    
+                    content = response.choices[0].message.content
+                    if content and content.strip():
+                        return True, f"API Key 验证成功！模型响应: {content.strip()}"
+                    else:
+                        return True, "API Key 验证成功！"
+                        
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    if "401" in error_msg or "Unauthorized" in error_msg or "invalid_api_key" in error_msg.lower():
+                        return False, f"API Key 无效（401 Unauthorized）。\n\n错误详情: {error_msg}\n\n💡 请检查您的 API Key 是否正确，或访问 https://platform.deepseek.com/ 获取新的 API Key。"
+                    
+                    elif "402" in error_msg or "Insufficient" in error_msg or "balance" in error_msg.lower():
+                        return False, f"API Key 余额不足（402 Payment Required）。\n\n错误详情: {error_msg}\n\n💡 请访问 https://platform.deepseek.com/ 为您的账户充值。"
+                    
+                    elif "403" in error_msg or "Forbidden" in error_msg:
+                        return False, f"API Key 权限不足（403 Forbidden）。\n\n错误详情: {error_msg}\n\n💡 请检查您的 API Key 权限设置。"
+                    
+                    elif "429" in error_msg or "Too Many" in error_msg or "rate_limit" in error_msg.lower():
+                        return False, f"请求过于频繁（429 Too Many Requests）。\n\n错误详情: {error_msg}\n\n💡 请稍后再试，或检查您的 API 调用频率限制。"
+                    
+                    elif "model_not_found" in error_msg.lower() or "model" in error_msg.lower() and "not" in error_msg.lower():
+                        return self.test_api_key(api_key, base_url, "deepseek-chat")
+                    
+                    else:
+                        return False, f"OpenAI SDK 调用失败: {error_msg}"
+            
+            elif REQUESTS_AVAILABLE:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 10,
+                    "temperature": 0.0
+                }
+                
+                try:
+                    response = requests.post(
+                        f"{base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "choices" in data and len(data["choices"]) > 0:
+                            content = data["choices"][0].get("message", {}).get("content", "")
+                            if content and content.strip():
+                                return True, f"API Key 验证成功！模型响应: {content.strip()}"
+                            else:
+                                return True, "API Key 验证成功！"
+                        else:
+                            return True, "API Key 验证成功！"
+                    
+                    else:
+                        try:
+                            error_data = response.json()
+                            error_msg = error_data.get("error", {}).get("message", response.text)
+                        except:
+                            error_msg = response.text
+                        
+                        status_code = response.status_code
+                        
+                        if status_code == 401:
+                            return False, f"API Key 无效（401 Unauthorized）。\n\n错误详情: {error_msg}\n\n💡 请检查您的 API Key 是否正确，或访问 https://platform.deepseek.com/ 获取新的 API Key。"
+                        
+                        elif status_code == 402:
+                            return False, f"API Key 余额不足（402 Payment Required）。\n\n错误详情: {error_msg}\n\n💡 请访问 https://platform.deepseek.com/ 为您的账户充值。"
+                        
+                        elif status_code == 403:
+                            return False, f"API Key 权限不足（403 Forbidden）。\n\n错误详情: {error_msg}\n\n💡 请检查您的 API Key 权限设置。"
+                        
+                        elif status_code == 429:
+                            return False, f"请求过于频繁（429 Too Many Requests）。\n\n错误详情: {error_msg}\n\n💡 请稍后再试，或检查您的 API 调用频率限制。"
+                        
+                        elif status_code == 404 and ("model" in error_msg.lower() or "not found" in error_msg.lower()):
+                            return self.test_api_key(api_key, base_url, "deepseek-chat")
+                        
+                        else:
+                            return False, f"API 调用失败（HTTP {status_code}）。\n\n错误详情: {error_msg}"
+                            
+                except requests.exceptions.Timeout:
+                    return False, "请求超时。\n\n💡 请检查您的网络连接，或稍后重试。"
+                    
+                except requests.exceptions.ConnectionError:
+                    return False, "网络连接错误。\n\n💡 请检查您的网络连接，确保能够访问 https://api.deepseek.com。"
+                    
+                except Exception as e:
+                    return False, f"HTTP 请求失败: {str(e)}"
+            else:
+                return False, "缺少必要的依赖库。\n\n💡 请安装 openai 或 requests 库：\n   pip install openai\n   或\n   pip install requests"
+                
+        except Exception as e:
+            return False, f"验证过程中发生意外错误: {str(e)}"
